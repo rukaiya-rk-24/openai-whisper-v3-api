@@ -1,4 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import WebSocket
 from fastapi.responses import JSONResponse, FileResponse
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from pydub import AudioSegment
@@ -75,91 +76,27 @@ def transcribe_audio(pipe, audio_bytes):
     result = pipe(temp_file)
     return result["text"]
 
-# Define the endpoint for audio file upload and transcription
-@app.post("/transcribe/")
-async def transcribe_audio_file(file: UploadFile = File(...)):
+@app.websocket("/ws/transcribe")
+async def websocket_transcribe(websocket: WebSocket):
+    await websocket.accept()
     try:
-        # Read the audio file
-        audio_bytes = await file.read()
-        # Transcribe the audio file
-        transcription = transcribe_audio(pipe, audio_bytes)
-        # Return the transcription
-        return JSONResponse(content={"transcription": transcription}, status_code=200)
-    except Exception as e:
-        # Return the error
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-    
-
-@app.get("/transcribe_batch/")
-async def transcribe_batch():
-    try:
-        batch_directory = 'batch'
-        all_mp3_files = get_mp3_files(batch_directory)
-        transcriptions = {}
-
-        for audio_file_path in all_mp3_files:
-            with open(audio_file_path, 'rb') as audio_file:
-                audio_bytes = audio_file.read()
+        while True:
+            # Receive audio chunk
+            audio_bytes = await websocket.receive_bytes()
+            
+            # Process and transcribe the audio chunk
+            # NOTE: This requires the Whisper model to handle real-time audio streams
             transcription = transcribe_audio(pipe, audio_bytes)
-            transcriptions[audio_file_path] = transcription
-
-        return transcriptions
-
+            
+            # Send the transcription back
+            await websocket.send_text(transcription)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        await websocket.close(code=1001, reason=str(e))
 
 
-
-######################################
-#### Youtube to MP3 Converter API ####
-######################################
-
-# Function to download YouTube video and convert it to MP3
-def youtube_video_to_mp3(youtube_url: str) -> str:
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'prefer_ffmpeg': True,
-        'keepvideo': False,
-        'quiet': True,
-        'no_warnings': True,
-        'outtmpl': f'{download_dir}/%(title)s.%(ext)s',
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info_dict = ydl.extract_info(youtube_url, download=False)
-        video_title = info_dict.get('title', 'YouTubeAudio')
-        ydl.download([youtube_url])
-
-    # The expected filename of the audio file
-    audio_filename = f'{download_dir}/{video_title}.mp3'
-    
-    return audio_filename
-
-# Helper function to clean up the file after sending the response
 def clean_up_file(file_path: str):
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
     except Exception as e:
         print(f"Error deleting file: {e}")
-
-# Define the endpoint for YouTube to MP3 conversion
-@app.post("/youtube_to_mp3/")
-async def youtube_to_mp3(url: str, background_tasks: BackgroundTasks):
-    try:
-        audio_filename = youtube_video_to_mp3(url)
-
-        # Create a FileResponse that prompts download on the client's side
-        response = FileResponse(path=audio_filename, media_type='audio/mpeg', filename=os.path.basename(audio_filename))
-
-        # Schedule the file to be deleted after the download
-        background_tasks.add_task(clean_up_file, file_path=audio_filename)
-        return response
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
