@@ -91,7 +91,7 @@ async def websocket_transcribe(websocket: WebSocket):
             # Send the transcription back
             await websocket.send_text(transcription)
     except Exception as e:
-        await websocket.close(code=1001, reason=str(e))
+        await websocket.close()
 
 
 def clean_up_file(file_path: str):
