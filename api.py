@@ -4,16 +4,22 @@ from fastapi.responses import JSONResponse, FileResponse
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from pydub import AudioSegment
 from typing import List
-import yt_dlp
 import torch
 import io
 import os
+import logging
 
 app = FastAPI()
 
 # Ensure the downloads directory exists
 download_dir = 'downloads'
 os.makedirs(download_dir, exist_ok=True)
+# Configure logging
+log_filename = 'api.log'  # Name of the log file
+logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Log an initial message (optional)
+logging.info('API started')
 
 # Function to set up the model and processor
 def setup_model():
@@ -76,19 +82,41 @@ def transcribe_audio(pipe, audio_bytes):
     result = pipe(temp_file)
     return result["text"]
 
+@app.post("/transcribe/")
+async def transcribe_audio_file(file: UploadFile = File(...)):
+    try:
+        # Read the audio file
+        audio_bytes = await file.read()
+        # Transcribe the audio file
+        transcription = transcribe_audio(pipe, audio_bytes)
+        # Return the transcription
+        return JSONResponse(content={"transcription": transcription}, status_code=200)
+    except Exception as e:
+        # Return the error
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+    
 @app.websocket("/ws/transcribe")
 async def websocket_transcribe(websocket: WebSocket):
     await websocket.accept()
+    logging.info("WebSocket connection accepted")
     try:
         while True:
+            logging.info("Waiting to receive audio data")
             # Receive audio chunk
             audio_bytes = await websocket.receive_bytes()
-            
+            logging.info(f"Received audio data: {len(audio_bytes)} bytes")
+            save_path = "received_audio.wav"  # Specify the path and filename
+            with open(save_path, "wb") as audio_file:
+                audio_file.write(audio_bytes)
+            logging.info(f"Saved received audio as '{save_path}'")
+
             # Process and transcribe the audio chunk
-            # NOTE: This requires the Whisper model to handle real-time audio streams
+            logging.info("Transcribing audio")
             transcription = transcribe_audio(pipe, audio_bytes)
-            
+            logging.info(f"Transcription: {transcription}")
+
             # Send the transcription back
+            logging.info("Sending transcription back to client")
             await websocket.send_text(transcription)
     except Exception as e:
         await websocket.close()
@@ -100,3 +128,5 @@ def clean_up_file(file_path: str):
             os.remove(file_path)
     except Exception as e:
         print(f"Error deleting file: {e}")
+
+
